@@ -8,6 +8,6 @@ requests
 langchain
 langchain-google-genai
 
-
+python-multipart
 
 
