@@ -1,4 +1,6 @@
+from http.client import responses
 
+from Generative_AI import *
 
 
 
@@ -42,4 +44,29 @@ async def process_message(request: Request, message: str = Form(...)):
 
 
 async def run_agent(user_input: str) -> str:
-    return f"🤖 AI processed: {user_input}"
+    print(user_input)
+
+    Human_message=HumanMessagePromptTemplate.from_template(
+        "Help fulfilling the user's need for the following task here:{task}",input_variables=["task"]
+    )
+    prompt=ChatPromptTemplate.from_messages([system_prompt,Human_message])
+    print(prompt.format(task=user_input))
+    chain_one = (
+            {
+                "task": lambda x: x["task"]
+            }
+            | prompt
+            | model
+            | {"response": lambda x: x.content}
+    )
+    res = chain_one.invoke({
+        "task": user_input
+
+    })
+
+
+
+
+
+
+    return f"🤖 AI processed: {res['response']}"
