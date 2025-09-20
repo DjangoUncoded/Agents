@@ -1,6 +1,6 @@
 fastapi
 pydantic
-
+uvicorn
 
 requests
 
