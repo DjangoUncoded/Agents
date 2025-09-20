@@ -1,21 +1,11 @@
 fastapi
 pydantic
 
-numpy
-matplotlib
-scikit-learn
+
 requests
-
-pandas
-seaborn
-sympy
-
-jupyterlab_server
-
 
 dotenv
 
-langchain_core
 langchain_google_genai
 langchain
 
