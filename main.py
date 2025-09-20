@@ -47,7 +47,7 @@ async def run_agent(user_input: str) -> str:
     print(user_input)
 
     Human_message=HumanMessagePromptTemplate.from_template(
-        "Help fulfilling the user's need for the following task here:{task}",input_variables=["task"]
+        "Help fulfilling the user's need for the following task here,keep it short an simple:{task}",input_variables=["task"]
     )
     prompt=ChatPromptTemplate.from_messages([system_prompt,Human_message])
     print(prompt.format(task=user_input))
@@ -69,4 +69,4 @@ async def run_agent(user_input: str) -> str:
 
 
 
-    return f"🤖 AI processed: {res['response']}"
+    return f"{res['response']}"
