@@ -13,7 +13,7 @@ from langchain.prompts import (
 API_KEY = os.getenv("GEMINI_API")
 
 # Set up model
-model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=API_KEY)
+model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=API_KEY)
 
 # Define system message template
 system_prompt = SystemMessagePromptTemplate.from_template(
