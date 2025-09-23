@@ -10,7 +10,7 @@ from sqlalchemy.sql.expression import text
 # Load environment variables
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = os.getenv("MY_DATABASE_URL")
 
 if not DATABASE_URL:
     raise ValueError("❌ DATABASE_URL not found in .env file")
