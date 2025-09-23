@@ -116,7 +116,7 @@ async def root(request: Request):
 
 
 
-@app.post("/login")
+@app.post("/")
 async def login(
         response: Response,
         username: str = Form(...),
