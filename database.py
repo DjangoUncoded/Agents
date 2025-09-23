@@ -1,8 +1,12 @@
 import os
 import asyncio
 from dotenv import load_dotenv
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+import os
+from dotenv import load_dotenv
+from sqlalchemy.sql.expression import text
+
 # Load environment variables
 load_dotenv()
 
@@ -14,6 +18,10 @@ if not DATABASE_URL:
 # Create async engine
 engine = create_async_engine(DATABASE_URL, echo=True, future=True)
 
+# Create async session factory
+SessionLocal = sessionmaker(engine, class_=AsyncSession, autoflush=False, autocommit=False
+)
+
 async def test_connection():
     try:
         async with engine.connect() as conn:
@@ -22,5 +30,4 @@ async def test_connection():
     except Exception as e:
         print("❌ Database connection failed:", str(e))
 
-if __name__ == "__main__":
-    asyncio.run(test_connection())
+
