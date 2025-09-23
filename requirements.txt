@@ -10,3 +10,4 @@ langchain-google-genai
 python-multipart
 python-jose
 typing-extensions
+asyncpg
