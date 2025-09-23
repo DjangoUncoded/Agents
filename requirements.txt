@@ -12,3 +12,4 @@ python-multipart
 langchain_core
 SQLAlchemy>=2.0
 asyncpg
+passlib
