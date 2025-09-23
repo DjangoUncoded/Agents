@@ -7,8 +7,8 @@ starlette
 requests
 langchain
 langchain-google-genai
-python-multipart
 python-jose
-typing-extensions
+python-multipart
+langchain_core
+SQLAlchemy>=2.0
 asyncpg
-sqlalchemy
