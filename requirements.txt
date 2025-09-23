@@ -7,8 +7,6 @@ starlette
 requests
 langchain
 langchain-google-genai
-jose
-typing
 python-multipart
-langchain_core
-pydantic
+python-jose
+typing-extensions
