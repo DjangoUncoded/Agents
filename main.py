@@ -228,7 +228,7 @@ async def process_message(request: Request, message: str = Form(...),db: AsyncSe
 
 chat_map = {}
 
-async def get_chat_history(session_id: str, llm: "ChatGoogleGenerativeAI", db: AsyncSession, username: str) -> ConversationSummaryMessageHistory:
+async def get_chat_history(session_id: str, llm: ChatGoogleGenerativeAI, db: AsyncSession, username: str) -> ConversationSummaryMessageHistory:
     if session_id not in chat_map:
         # fetch summary from DB
         stmt = select(Chat).where(Chat.username == username)
