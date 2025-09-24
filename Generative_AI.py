@@ -50,7 +50,6 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
     async def add_messages(self, db: AsyncSession, messages: list[BaseMessage]) -> None:
         """Add messages and update conversation summary in memory and DB."""
 
-        # Current summary
         existing_summary = self.messages[0].content if self.messages else ""
 
         # Construct summary prompt
@@ -66,13 +65,31 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
             )
         ])
 
-        # Invoke LLM asynchronously to get new summary
-        new_summary = await self.llm.ainvoke(
-            summary_prompt.format_messages(
-                existing_summary=existing_summary,
-                messages=[x.content for x in messages]
+        # --- Async-safe LLM call ---
+        import asyncio
+        loop = asyncio.get_running_loop()
+        from concurrent.futures import ThreadPoolExecutor
+        executor = ThreadPoolExecutor()
+
+        # Run either async or blocking LLM safely
+        if hasattr(self.llm, "ainvoke"):
+            new_summary = await self.llm.ainvoke(
+                summary_prompt.format_messages(
+                    existing_summary=existing_summary,
+                    messages=[x.content for x in messages]
+                )
             )
-        )
+        else:
+            # blocking invoke wrapped in threadpool
+            new_summary = await loop.run_in_executor(
+                executor,
+                lambda: self.llm.invoke(
+                    summary_prompt.format_messages(
+                        existing_summary=existing_summary,
+                        messages=[x.content for x in messages]
+                    )
+                )
+            )
 
         # Update in-memory summary
         self.messages = [SystemMessage(content=new_summary.content)]
@@ -85,12 +102,11 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
         if chat:
             chat.summary = new_summary.content
         else:
-            # TODO: replace user_id with the actual logged-in user's ID
+            # Use actual user ID here
             chat = Chat(username=self._username, summary=new_summary.content, user_id=1)
             db.add(chat)
 
         await db.commit()
 
     def clear(self) -> None:
-        """Clear the memory messages."""
         self.messages = []

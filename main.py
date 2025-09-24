@@ -238,19 +238,16 @@ async def process_message(request: Request, message: str = Form(...),db: AsyncSe
 
 
 
-
 chat_map = {}
 
-async def get_chat_history(session_id: str, llm: ChatGoogleGenerativeAI, db: AsyncSession, username: str) -> ConversationSummaryMessageHistory:
+async def get_chat_history(session_id: str, llm: "ChatGoogleGenerativeAI", db: AsyncSession, username: str) -> ConversationSummaryMessageHistory:
     if session_id not in chat_map:
-        # fetch summary from DB
         stmt = select(Chat).where(Chat.username == username)
         result = await db.execute(stmt)
         chat = result.scalar_one_or_none()
 
         summary = chat.summary if chat else "This is my very first time talking to you"
 
-        # create memory object (NO db stored inside!)
         chat_map[session_id] = ConversationSummaryMessageHistory(
             llm=llm,
             username=username,
@@ -260,6 +257,10 @@ async def get_chat_history(session_id: str, llm: ChatGoogleGenerativeAI, db: Asy
     return chat_map[session_id]
 
 #Adding Memory Feature
+from concurrent.futures import ThreadPoolExecutor
+
+executor = ThreadPoolExecutor()
+
 async def run_agent(user_input: str, request: Request, db: AsyncSession) -> str:
     # 1️⃣ get user
     user = await get_current_user(request, db)
@@ -278,11 +279,16 @@ async def run_agent(user_input: str, request: Request, db: AsyncSession) -> str:
 
     pipeline = prompt_template | model
 
-    # 4️⃣ invoke LLM
-    res = pipeline.invoke({
-        "query": user_input,
-        "history": history.messages
-    })
+    # 4️⃣ invoke LLM safely
+    loop = asyncio.get_running_loop()
+    res = await loop.run_in_executor(
+        executor,
+        lambda: pipeline.invoke({
+            "query": user_input,
+            "history": history.messages
+        })
+    )
+
     ai_response = res.content if hasattr(res, "content") else str(res)
 
     # 5️⃣ update memory & DB
