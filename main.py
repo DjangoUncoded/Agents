@@ -225,7 +225,6 @@ async def process_message(request: Request, message: str = Form(...),db: AsyncSe
 
 
 
-
 chat_map = {}
 
 async def get_chat_history(session_id: str, llm: ChatGoogleGenerativeAI, db: AsyncSession, username: str) -> ConversationSummaryMessageHistory:
@@ -237,10 +236,9 @@ async def get_chat_history(session_id: str, llm: ChatGoogleGenerativeAI, db: Asy
 
         summary = chat.summary if chat else "This is my very first time talking to you"
 
-        # create memory object
+        # create memory object (NO db stored inside!)
         chat_map[session_id] = ConversationSummaryMessageHistory(
             llm=llm,
-            db=db,
             username=username,
             summary=summary
         )
@@ -248,7 +246,7 @@ async def get_chat_history(session_id: str, llm: ChatGoogleGenerativeAI, db: Asy
     return chat_map[session_id]
 
 #Adding Memory Feature
-async def run_agent(user_input: str, request: Request, db: AsyncSession = Depends(get_db)) -> str:
+async def run_agent(user_input: str, request: Request, db: AsyncSession) -> str:
     # 1️⃣ get user
     user = await get_current_user(request, db)
     username = user.username
@@ -274,11 +272,9 @@ async def run_agent(user_input: str, request: Request, db: AsyncSession = Depend
     ai_response = res.content if hasattr(res, "content") else str(res)
 
     # 5️⃣ update memory & DB
-    await history.add_messages([
+    await history.add_messages(db, [
         HumanMessage(content=user_input),
         AIMessage(content=ai_response)
     ])
 
     return ai_response
-
-

@@ -36,19 +36,20 @@ from langchain_core.runnables import ConfigurableFieldSpec
 
 class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
     messages: list[BaseMessage] = Field(default_factory=list)
-    llm: "ChatGoogleGenerativeAI"  # your LLM type here
+    llm: "ChatGoogleGenerativeAI"
+    _username: str
 
     model_config = {"arbitrary_types_allowed": True}
 
-    def __init__(self, llm: "ChatGoogleGenerativeAI", db: AsyncSession, username: str, summary: str = ""):
+    def __init__(self, llm: "ChatGoogleGenerativeAI", username: str, summary: str = ""):
         super().__init__(llm=llm)
-        self._db = db            # private attribute, not part of BaseModel fields
         self._username = username
         if summary:
             self.messages = [SystemMessage(content=summary)]
 
-    async def add_messages(self, messages: list[BaseMessage]) -> None:
+    async def add_messages(self, db: AsyncSession, messages: list[BaseMessage]) -> None:
         """Add messages and update conversation summary in memory and DB."""
+
         # Current summary
         existing_summary = self.messages[0].content if self.messages else ""
 
@@ -78,19 +79,18 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
 
         # Persist summary in DB
         stmt = select(Chat).where(Chat.username == self._username)
-        result = await self._db.execute(stmt)
+        result = await db.execute(stmt)
         chat = result.scalar_one_or_none()
 
         if chat:
             chat.summary = new_summary.content
         else:
-            # If no chat exists, create new
-            chat = Chat(username=self._username, summary=new_summary.content, user_id=1)  # <-- set proper user_id
-            self._db.add(chat)
+            # TODO: replace user_id with the actual logged-in user's ID
+            chat = Chat(username=self._username, summary=new_summary.content, user_id=1)
+            db.add(chat)
 
-        await self._db.commit()
+        await db.commit()
 
     def clear(self) -> None:
         """Clear the memory messages."""
         self.messages = []
-
