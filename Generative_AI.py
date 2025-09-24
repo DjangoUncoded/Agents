@@ -1,3 +1,5 @@
+import asyncio
+
 from dotenv import load_dotenv
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,25 +36,33 @@ from langchain_core.runnables import ConfigurableFieldSpec
 
 
 
+from concurrent.futures import ThreadPoolExecutor
+
+executor = ThreadPoolExecutor()
+
 class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
     messages: list[BaseMessage] = Field(default_factory=list)
     llm: "ChatGoogleGenerativeAI"
     _username: str
+    _user_id: int  # actual logged-in user ID
 
     model_config = {"arbitrary_types_allowed": True}
 
-    def __init__(self, llm: "ChatGoogleGenerativeAI", username: str, summary: str = ""):
+    def __init__(self, llm: "ChatGoogleGenerativeAI", username: str, user_id: int, summary: str = ""):
         super().__init__(llm=llm)
         self._username = username
+        self._user_id = user_id
         if summary:
             self.messages = [SystemMessage(content=summary)]
 
-    async def add_messages(self, db: AsyncSession, messages: list[BaseMessage]) -> None:
-        """Add messages and update conversation summary in memory and DB."""
-
+    async def add_messages(self, db_factory: callable, messages: list[BaseMessage]):
+        """
+        Add messages and update conversation summary in memory and DB.
+        db_factory: async context manager that yields a fresh AsyncSession
+        """
         existing_summary = self.messages[0].content if self.messages else ""
 
-        # Construct summary prompt
+        # Build summary prompt
         summary_prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(
                 "Given the existing conversation summary and the new messages, "
@@ -65,13 +75,8 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
             )
         ])
 
-        # --- Async-safe LLM call ---
-        import asyncio
+        # Async-safe LLM call
         loop = asyncio.get_running_loop()
-        from concurrent.futures import ThreadPoolExecutor
-        executor = ThreadPoolExecutor()
-
-        # Run either async or blocking LLM safely
         if hasattr(self.llm, "ainvoke"):
             new_summary = await self.llm.ainvoke(
                 summary_prompt.format_messages(
@@ -80,7 +85,6 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
                 )
             )
         else:
-            # blocking invoke wrapped in threadpool
             new_summary = await loop.run_in_executor(
                 executor,
                 lambda: self.llm.invoke(
@@ -91,22 +95,22 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
                 )
             )
 
-        # Update in-memory summary
+        # Update in-memory messages
         self.messages = [SystemMessage(content=new_summary.content)]
 
-        # Persist summary in DB
-        stmt = select(Chat).where(Chat.username == self._username)
-        result = await db.execute(stmt)
-        chat = result.scalar_one_or_none()
+        # Persist to DB using a fresh session
+        async with db_factory() as db:
+            stmt = select(Chat).where(Chat.username == self._username)
+            result = await db.execute(stmt)
+            chat = result.scalar_one_or_none()
 
-        if chat:
-            chat.summary = new_summary.content
-        else:
-            # Use actual user ID here
-            chat = Chat(username=self._username, summary=new_summary.content, user_id=1)
-            db.add(chat)
+            if chat:
+                chat.summary = new_summary.content
+            else:
+                chat = Chat(username=self._username, summary=new_summary.content, user_id=self._user_id)
+                db.add(chat)
 
-        await db.commit()
+            await db.commit()
 
     def clear(self) -> None:
         self.messages = []

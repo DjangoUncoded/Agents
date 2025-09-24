@@ -12,7 +12,12 @@ import  os
 from datetime import datetime, timedelta
 
 
-
+async def get_db():
+    async with SessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
 
 
 
@@ -28,13 +33,15 @@ from models import *
 from database import *
 from sqlalchemy.orm import Session
 
-async def get_db():
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def get_db_session():
     async with SessionLocal() as session:
         try:
             yield session
         finally:
             await session.close()
-
 
 #Authentication
 from typing import Optional
@@ -211,7 +218,7 @@ async def signup(
 
 
 
-
+from functools import partial
 
 
 @app.get("/protected", response_class=HTMLResponse)
@@ -223,63 +230,59 @@ async def get_chat(request: Request):
     return templates.TemplateResponse("chat.html", {"request": request, "messages": messages})
 
 @app.post("/protected", response_class=HTMLResponse)
-async def process_message(request: Request, message: str = Form(...),db: AsyncSession = Depends(get_db)):
-    # Store user message
+async def process_message(request: Request, message: str = Form(...), db: AsyncSession = Depends(get_db)):
+    reply = await run_agent(message, request, db, db_factory=get_db_session)
     messages.append({"role": "user", "content": message})
-
-
-    reply = await run_agent(message,request,db)
-
-    # Store assistant reply
     messages.append({"role": "assistant", "content": reply})
-
     return templates.TemplateResponse("chat.html", {"request": request, "messages": messages})
-
-
 
 
 chat_map = {}
 
-async def get_chat_history(session_id: str, llm: "ChatGoogleGenerativeAI", db: AsyncSession, username: str) -> ConversationSummaryMessageHistory:
+async def get_chat_history(session_id: str, llm: "ChatGoogleGenerativeAI", username: str, user_id: int, summary: str):
     if session_id not in chat_map:
-        stmt = select(Chat).where(Chat.username == username)
-        result = await db.execute(stmt)
-        chat = result.scalar_one_or_none()
-
-        summary = chat.summary if chat else "This is my very first time talking to you"
-
         chat_map[session_id] = ConversationSummaryMessageHistory(
             llm=llm,
             username=username,
+            user_id=user_id,
             summary=summary
         )
-
     return chat_map[session_id]
 
+
 #Adding Memory Feature
-from concurrent.futures import ThreadPoolExecutor
-
-executor = ThreadPoolExecutor()
-
-async def run_agent(user_input: str, request: Request, db: AsyncSession) -> str:
-    # 1️⃣ get user
+async def run_agent(user_input: str, request: Request, db: AsyncSession, db_factory: callable) -> str:
+    # 1️⃣ Get logged-in user
     user = await get_current_user(request, db)
     username = user.username
+    user_id = user.id
     session_id = f"session_{username}"
 
-    # 2️⃣ get or create memory
-    history = await get_chat_history(session_id=session_id, llm=model, db=db, username=username)
+    # 2️⃣ Fetch existing summary safely
+    async with db_factory() as tmp_db:
+        stmt = select(Chat).where(Chat.username == username)
+        result = await tmp_db.execute(stmt)
+        chat = result.scalar_one_or_none()
+        summary = chat.summary if chat else "This is my very first time talking to you"
 
-    # 3️⃣ build prompt
+    # 3️⃣ Get or create memory
+    history = await get_chat_history(
+        session_id=session_id,
+        llm=model,
+        username=username,
+        user_id=user_id,
+        summary=summary
+    )
+
+    # 4️⃣ Build prompt and LLM pipeline
     prompt_template = ChatPromptTemplate.from_messages([
         SystemMessagePromptTemplate.from_template(system_prompt),
         MessagesPlaceholder(variable_name="history"),
         HumanMessagePromptTemplate.from_template("{query}")
     ])
-
     pipeline = prompt_template | model
 
-    # 4️⃣ invoke LLM safely
+    # 5️⃣ Invoke LLM safely in a threadpool
     loop = asyncio.get_running_loop()
     res = await loop.run_in_executor(
         executor,
@@ -288,11 +291,10 @@ async def run_agent(user_input: str, request: Request, db: AsyncSession) -> str:
             "history": history.messages
         })
     )
-
     ai_response = res.content if hasattr(res, "content") else str(res)
 
-    # 5️⃣ update memory & DB
-    await history.add_messages(db, [
+    # 6️⃣ Update memory & DB
+    await history.add_messages(db_factory, [
         HumanMessage(content=user_input),
         AIMessage(content=ai_response)
     ])
