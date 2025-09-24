@@ -114,6 +114,20 @@ messages = []
 async def root(request: Request):
     return templates.TemplateResponse("Login.html", {"request": request})
 
+#Debugging
+
+from fastapi.responses import JSONResponse
+import traceback
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print("❌ Exception:", exc)
+    traceback.print_exc()  # full stack trace in Vercel logs
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)}
+    )
+
 
 
 @app.post("/")
