@@ -13,7 +13,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("MY_DATABASE_URL")
 
 if not DATABASE_URL:
-    raise ValueError("❌ DATABASE_URL not found in .env file")
+    raise ValueError("DATABASE_URL not found in .env file")
 
 # Create async engine
 engine = create_async_engine(DATABASE_URL, echo=True, future=True)
@@ -28,7 +28,7 @@ async def test_connection():
             result = await conn.execute(text("SELECT 1"))
             print("✅ Database connected successfully:", result.scalar())
     except Exception as e:
-        print("❌ Database connection failed:", str(e))
+        print("Database connection failed:", str(e))
 
 if __name__ == "__main__":
     asyncio.run(test_connection())

@@ -1,3 +1,4 @@
+
 import asyncio
 
 from dotenv import load_dotenv
@@ -11,7 +12,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import (
     ChatPromptTemplate,
     HumanMessagePromptTemplate,
-    SystemMessagePromptTemplate,MessagesPlaceholder
+    SystemMessagePromptTemplate,
+    MessagesPlaceholder
 )
 
 # Load API key
@@ -21,24 +23,16 @@ API_KEY = os.getenv("GEMINI_API")
 model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=API_KEY)
 
 # Define system message template
-system_prompt =  "You are an AI agent,designed and implemented for Youth Mental Wellness Task."
+system_prompt = "You are an AI agent, designed and implemented for Youth Mental Wellness Task."
 
-
-#Adding Chat Memoization
-
-from langchain.memory import (ConversationSummaryMemory)
+# Adding Chat Memoization
+from langchain.memory import ConversationSummaryMemory
 from langchain_core.messages import SystemMessage
 from pydantic import BaseModel, Field
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.runnables import ConfigurableFieldSpec
-
-
-
-from concurrent.futures import ThreadPoolExecutor
-
-executor = ThreadPoolExecutor()
 
 class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
     messages: list[BaseMessage] = Field(default_factory=list)
@@ -75,42 +69,40 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
             )
         ])
 
-        # Async-safe LLM call
-        loop = asyncio.get_running_loop()
-        if hasattr(self.llm, "ainvoke"):
-            new_summary = await self.llm.ainvoke(
-                summary_prompt.format_messages(
-                    existing_summary=existing_summary,
-                    messages=[x.content for x in messages]
-                )
-            )
-        else:
-            new_summary = await loop.run_in_executor(
-                executor,
-                lambda: self.llm.invoke(
-                    summary_prompt.format_messages(
-                        existing_summary=existing_summary,
-                        messages=[x.content for x in messages]
-                    )
-                )
-            )
+        formatted_messages = summary_prompt.format_messages(
+            existing_summary=existing_summary,
+            messages=[x.content for x in messages]
+        )
 
-        # Update in-memory messages
+        try:
+            if hasattr(self.llm, "ainvoke"):
+                new_summary = await self.llm.ainvoke(formatted_messages)
+            else:
+                new_summary = self.llm.invoke(formatted_messages)
+        except Exception as e:
+            print(f"Error during LLM invocation: {e}")
+            new_summary_content = f"{existing_summary}\n\n{'; '.join([x.content for x in messages])}"
+            new_summary = type('MockResponse', (), {'content': new_summary_content})()
+
         self.messages = [SystemMessage(content=new_summary.content)]
 
-        # Persist to DB using a fresh session
-        async with db_factory() as db:
-            stmt = select(Chat).where(Chat.username == self._username)
-            result = await db.execute(stmt)
-            chat = result.scalar_one_or_none()
+        # Fixed: Use async context manager properly
+        try:
+            async for db in db_factory():
+                stmt = select(Chat).where(Chat.username == self._username)
+                result = await db.execute(stmt)
+                chat = result.scalar_one_or_none()
 
-            if chat:
-                chat.summary = new_summary.content
-            else:
-                chat = Chat(username=self._username, summary=new_summary.content, user_id=self._user_id)
-                db.add(chat)
+                if chat:
+                    chat.summary = new_summary.content
+                else:
+                    chat = Chat(username=self._username, summary=new_summary.content, user_id=self._user_id)
+                    db.add(chat)
 
-            await db.commit()
+                await db.commit()
+                break  # Important: only use the first yielded session
+        except Exception as e:
+            print(f"Error during database operation: {e}")
 
     def clear(self) -> None:
         self.messages = []

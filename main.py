@@ -110,6 +110,8 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
 
 
 
+if os.name == 'nt':
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 #Setting Up Templates
 templates = Jinja2Templates(directory="templates")
@@ -175,31 +177,35 @@ async def signup(
         username: str = Form(...),
         password: str = Form(...),
         email: str = Form(...),
-
         db: AsyncSession = Depends(get_db),
 ):
+    # Check for existing username
     stmt = select(User).where(User.username == username)
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
 
     if user:
-        # return an error message to the signup page
         raise HTTPException(status_code=400, detail="Username already exists")
+
+    # Check for existing email (ADD THIS)
+    stmt = select(User).where(User.email == email)
+    result = await db.execute(stmt)
+    existing_email = result.scalar_one_or_none()
+
+    if existing_email:
+        raise HTTPException(status_code=400, detail="Email already registered")
 
     created_user = User(
         username=username,
         password=bcrypt_context.hash(password),
-
-
         email=email,
     )
     created_chat = Chat(
         username=username,
         user=created_user
-
     )
-    db.add(created_chat)
     db.add(created_user)
+    db.add(created_chat)
     await db.commit()
     await db.refresh(created_user)
     await db.refresh(created_chat)
@@ -210,6 +216,12 @@ async def signup(
 
 
 
+
+async def db_factory():
+    """Factory function to create database sessions for the conversation history"""
+    async with SessionLocal() as session:
+        yield session
+        await session.close()
 
 
 
@@ -229,17 +241,32 @@ async def get_chat(request: Request):
 
     return templates.TemplateResponse("chat.html", {"request": request, "messages": messages})
 
-@app.post("/protected", response_class=HTMLResponse)
-async def process_message(request: Request, message: str = Form(...), db: AsyncSession = Depends(get_db)):
-    reply = await run_agent(message, request, db, db_factory=get_db_session)
-    messages.append({"role": "user", "content": message})
-    messages.append({"role": "assistant", "content": reply})
-    return templates.TemplateResponse("chat.html", {"request": request, "messages": messages})
-
 
 chat_map = {}
 
+@app.post("/protected", response_class=HTMLResponse)
+async def process_message(request: Request, message: str = Form(...), db: AsyncSession = Depends(get_db)):
+    """
+    Main chat endpoint.
+    """
+    ai_reply = await run_agent(message, request, db, db_factory=db_factory)
+
+    # Persist conversation for template rendering
+    messages.append({"role": "user", "content": message})
+    messages.append({"role": "assistant", "content": ai_reply})
+
+    return templates.TemplateResponse(
+        "chat.html",
+        {"request": request, "messages": messages}
+    )
+
+# -------------------------------
+# Memory / Conversation Handling
+# -------------------------------
 async def get_chat_history(session_id: str, llm: "ChatGoogleGenerativeAI", username: str, user_id: int, summary: str):
+    """
+    Get or initialize ConversationSummaryMessageHistory for a session.
+    """
     if session_id not in chat_map:
         chat_map[session_id] = ConversationSummaryMessageHistory(
             llm=llm,
@@ -249,54 +276,64 @@ async def get_chat_history(session_id: str, llm: "ChatGoogleGenerativeAI", usern
         )
     return chat_map[session_id]
 
-
-#Adding Memory Feature
+# -------------------------------
+# Agent Runner
+# -------------------------------
 async def run_agent(user_input: str, request: Request, db: AsyncSession, db_factory: callable) -> str:
-    # 1️⃣ Get logged-in user
-    user = await get_current_user(request, db)
-    username = user.username
-    user_id = user.id
-    session_id = f"session_{username}"
+    """
+    Processes user input, manages memory, invokes LLM, and updates DB.
+    """
+    try:
+        # 1️⃣ Get logged-in user
+        user = await get_current_user(request, db)
+        username = user.username
+        user_id = user.id
+        session_id = f"session_{username}"
 
-    # 2️⃣ Fetch existing summary safely
-    async with db_factory() as tmp_db:
+        # 2️⃣ Fetch existing summary safely
         stmt = select(Chat).where(Chat.username == username)
-        result = await tmp_db.execute(stmt)
+        result = await db.execute(stmt)
         chat = result.scalar_one_or_none()
         summary = chat.summary if chat else "This is my very first time talking to you"
 
-    # 3️⃣ Get or create memory
-    history = await get_chat_history(
-        session_id=session_id,
-        llm=model,
-        username=username,
-        user_id=user_id,
-        summary=summary
-    )
+        # 3️⃣ Get or create memory object
+        history = await get_chat_history(
+            session_id=session_id,
+            llm=model,
+            username=username,
+            user_id=user_id,
+            summary=summary
+        )
 
-    # 4️⃣ Build prompt and LLM pipeline
-    prompt_template = ChatPromptTemplate.from_messages([
-        SystemMessagePromptTemplate.from_template(system_prompt),
-        MessagesPlaceholder(variable_name="history"),
-        HumanMessagePromptTemplate.from_template("{query}")
-    ])
-    pipeline = prompt_template | model
+        # 4️⃣ Build prompt
+        prompt_template = ChatPromptTemplate.from_messages([
+            SystemMessagePromptTemplate.from_template(system_prompt),
+            MessagesPlaceholder(variable_name="history"),
+            HumanMessagePromptTemplate.from_template("{query}")
+        ])
 
-    # 5️⃣ Invoke LLM safely in a threadpool
-    loop = asyncio.get_running_loop()
-    res = await loop.run_in_executor(
-        executor,
-        lambda: pipeline.invoke({
-            "query": user_input,
-            "history": history.messages
-        })
-    )
-    ai_response = res.content if hasattr(res, "content") else str(res)
+        # 5️⃣ Format prompt
+        formatted_messages = prompt_template.format_messages(
+            query=user_input,
+            history=history.messages
+        )
 
-    # 6️⃣ Update memory & DB
-    await history.add_messages(db_factory, [
-        HumanMessage(content=user_input),
-        AIMessage(content=ai_response)
-    ])
+        # 6️⃣ Invoke LLM (async if available)
+        if hasattr(model, "ainvoke"):
+            res = await model.ainvoke(formatted_messages)
+        else:
+            res = model.invoke(formatted_messages)
 
-    return ai_response
+        ai_response = res.content if hasattr(res, "content") else str(res)
+
+        # 7️⃣ Update memory & persist summary to DB
+        await history.add_messages(db_factory, [
+            HumanMessage(content=user_input),
+            AIMessage(content=ai_response)
+        ])
+
+        return ai_response
+
+    except Exception as e:
+        print(f"Error in run_agent: {e}")
+        return "I'm sorry, but I encountered an error while processing your request. Please try again."
