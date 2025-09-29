@@ -74,10 +74,10 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)):
+async def get_current_user(request: Request):
+    """Get current user - creates its own DB session"""
     token = request.cookies.get("access_token")
     if not token:
-        # This will trigger a redirect to the login page from the frontend if needed
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     try:
@@ -88,14 +88,15 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token: JWTError")
 
-    stmt = select(User).where(User.username == username)
-    result = await db.execute(stmt)
-    user = result.scalar_one_or_none()
+    # Create its own session
+    async with SessionLocal() as db:
+        stmt = select(User).where(User.username == username)
+        result = await db.execute(stmt)
+        user = result.scalar_one_or_none()
 
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
-
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user
 
 
 
@@ -279,19 +280,19 @@ async def run_agent(user_input: str, request: Request, db: AsyncSession) -> str:
     Processes user input, manages memory, invokes LLM, and updates DB.
     """
     try:
-        # 1️⃣ Get logged-in user (uses the passed db session)
-        user = await get_current_user(request, db)
+        # 1️⃣ Get logged-in user (creates its own session now)
+        user = await get_current_user(request)
         username = user.username
         user_id = user.id
         session_id = f"session_{username}"
 
-        # 2️⃣ Fetch existing summary (reuse same db session - it's just a read)
+        # 2️⃣ Fetch existing summary (uses the passed db session)
         stmt = select(Chat).where(Chat.username == username)
         result = await db.execute(stmt)
         chat = result.scalar_one_or_none()
         summary = chat.summary if chat else "This is my very first time talking to you"
 
-        # 3️⃣ Get or create memory object
+        # Rest remains the same...
         history = await get_chat_history(
             session_id=session_id,
             llm=model,
@@ -300,20 +301,17 @@ async def run_agent(user_input: str, request: Request, db: AsyncSession) -> str:
             summary=summary
         )
 
-        # 4️⃣ Build prompt
         prompt_template = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(system_prompt),
             MessagesPlaceholder(variable_name="history"),
             HumanMessagePromptTemplate.from_template("{query}")
         ])
 
-        # 5️⃣ Format prompt
         formatted_messages = prompt_template.format_messages(
             query=user_input,
             history=history.messages
         )
 
-        # 6️⃣ Invoke LLM (async if available)
         if hasattr(model, "ainvoke"):
             res = await model.ainvoke(formatted_messages)
         else:
@@ -321,7 +319,6 @@ async def run_agent(user_input: str, request: Request, db: AsyncSession) -> str:
 
         ai_response = res.content if hasattr(res, "content") else str(res)
 
-        # 7️⃣ Update memory & persist summary (creates its own session internally)
         await history.add_messages([
             HumanMessage(content=user_input),
             AIMessage(content=ai_response)
