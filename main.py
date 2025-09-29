@@ -217,11 +217,7 @@ async def signup(
 
 
 
-async def db_factory():
-    """Factory function to create database sessions for the conversation history"""
-    async with SessionLocal() as session:
-        yield session
-        await session.close()
+
 
 
 
@@ -243,13 +239,12 @@ async def get_chat(request: Request):
 
 
 chat_map = {}
-
 @app.post("/protected", response_class=HTMLResponse)
 async def process_message(request: Request, message: str = Form(...), db: AsyncSession = Depends(get_db)):
     """
     Main chat endpoint.
     """
-    ai_reply = await run_agent(message, request, db, db_factory=db_factory)
+    ai_reply = await run_agent(message, request, db)
 
     # Persist conversation for template rendering
     messages.append({"role": "user", "content": message})
@@ -279,18 +274,18 @@ async def get_chat_history(session_id: str, llm: "ChatGoogleGenerativeAI", usern
 # -------------------------------
 # Agent Runner
 # -------------------------------
-async def run_agent(user_input: str, request: Request, db: AsyncSession, db_factory: callable) -> str:
+async def run_agent(user_input: str, request: Request, db: AsyncSession) -> str:
     """
     Processes user input, manages memory, invokes LLM, and updates DB.
     """
     try:
-        # 1️⃣ Get logged-in user
+        # 1️⃣ Get logged-in user (uses the passed db session)
         user = await get_current_user(request, db)
         username = user.username
         user_id = user.id
         session_id = f"session_{username}"
 
-        # 2️⃣ Fetch existing summary safely
+        # 2️⃣ Fetch existing summary (reuse same db session - it's just a read)
         stmt = select(Chat).where(Chat.username == username)
         result = await db.execute(stmt)
         chat = result.scalar_one_or_none()
@@ -326,8 +321,8 @@ async def run_agent(user_input: str, request: Request, db: AsyncSession, db_fact
 
         ai_response = res.content if hasattr(res, "content") else str(res)
 
-        # 7️⃣ Update memory & persist summary to DB
-        await history.add_messages(db_factory, [
+        # 7️⃣ Update memory & persist summary (creates its own session internally)
+        await history.add_messages([
             HumanMessage(content=user_input),
             AIMessage(content=ai_response)
         ])
@@ -336,4 +331,6 @@ async def run_agent(user_input: str, request: Request, db: AsyncSession, db_fact
 
     except Exception as e:
         print(f"Error in run_agent: {e}")
+        import traceback
+        traceback.print_exc()
         return "I'm sorry, but I encountered an error while processing your request. Please try again."

@@ -49,10 +49,10 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
         if summary:
             self.messages = [SystemMessage(content=summary)]
 
-    async def add_messages(self, db_factory: callable, messages: list[BaseMessage]):
+    async def add_messages(self, messages: list[BaseMessage]):
         """
         Add messages and update conversation summary in memory and DB.
-        db_factory: async context manager that yields a fresh AsyncSession
+        Creates its own DB session to avoid conflicts.
         """
         existing_summary = self.messages[0].content if self.messages else ""
 
@@ -86,9 +86,10 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
 
         self.messages = [SystemMessage(content=new_summary.content)]
 
-        # Fixed: Use async context manager properly
+        # Persist to DB - import here to avoid circular imports
         try:
-            async for db in db_factory():
+            from database import SessionLocal
+            async with SessionLocal() as db:
                 stmt = select(Chat).where(Chat.username == self._username)
                 result = await db.execute(stmt)
                 chat = result.scalar_one_or_none()
@@ -100,9 +101,9 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
                     db.add(chat)
 
                 await db.commit()
-                break  # Important: only use the first yielded session
         except Exception as e:
             print(f"Error during database operation: {e}")
-
+            import traceback
+            traceback.print_exc()
     def clear(self) -> None:
         self.messages = []
