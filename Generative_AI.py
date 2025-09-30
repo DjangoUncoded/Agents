@@ -1,4 +1,3 @@
-
 import asyncio
 
 from dotenv import load_dotenv
@@ -15,6 +14,7 @@ from langchain.prompts import (
     SystemMessagePromptTemplate,
     MessagesPlaceholder
 )
+from langchain_core.messages import HumanMessage, AIMessage
 
 # Load API key
 API_KEY = os.getenv("GEMINI_API")
@@ -26,13 +26,10 @@ model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=API_KEY)
 system_prompt = "You are an AI agent, designed and implemented for Youth Mental Wellness Task."
 
 # Adding Chat Memoization
-from langchain.memory import ConversationSummaryMemory
 from langchain_core.messages import SystemMessage
 from pydantic import BaseModel, Field
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage
-from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_core.runnables import ConfigurableFieldSpec
 
 class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
     messages: list[BaseMessage] = Field(default_factory=list)
@@ -49,10 +46,12 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
         if summary:
             self.messages = [SystemMessage(content=summary)]
 
-    async def add_messages(self, messages: list[BaseMessage]):
+    # ------------------- MODIFICATION START -------------------
+    # This method now accepts a database session ('db') as a parameter.
+    async def add_messages(self, messages: list[BaseMessage], db: AsyncSession):
         """
         Add messages and update conversation summary in memory and DB.
-        Creates its own DB session to avoid conflicts.
+        Uses the provided DB session from the request.
         """
         existing_summary = self.messages[0].content if self.messages else ""
 
@@ -86,24 +85,25 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
 
         self.messages = [SystemMessage(content=new_summary.content)]
 
-        # Persist to DB - import here to avoid circular imports
+        # Persist to DB using the passed session
+        # No longer creates its own session with 'async with SessionLocal()'.
         try:
-            from database import SessionLocal
-            async with SessionLocal() as db:
-                stmt = select(Chat).where(Chat.username == self._username)
-                result = await db.execute(stmt)
-                chat = result.scalar_one_or_none()
+            stmt = select(Chat).where(Chat.username == self._username)
+            result = await db.execute(stmt)
+            chat = result.scalar_one_or_none()
 
-                if chat:
-                    chat.summary = new_summary.content
-                else:
-                    chat = Chat(username=self._username, summary=new_summary.content, user_id=self._user_id)
-                    db.add(chat)
+            if chat:
+                chat.summary = new_summary.content
+            else:
+                chat = Chat(username=self._username, summary=new_summary.content, user_id=self._user_id)
+                db.add(chat)
 
-                await db.commit()
+            await db.commit()
         except Exception as e:
             print(f"Error during database operation: {e}")
             import traceback
             traceback.print_exc()
+    # -------------------- MODIFICATION END --------------------
+
     def clear(self) -> None:
         self.messages = []
