@@ -20,7 +20,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 API_KEY = os.getenv("GEMINI_API")
 
 # Set up model
-model = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=API_KEY)
+model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=API_KEY)
 
 # Define system message template
 system_prompt = "You are an AI agent, designed and implemented for Youth Mental Wellness Task."
@@ -46,8 +46,6 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
         if summary:
             self.messages = [SystemMessage(content=summary)]
 
-    # ------------------- MODIFICATION START -------------------
-    # This method now accepts a database session ('db') as a parameter.
     async def add_messages(self, messages: list[BaseMessage], db: AsyncSession):
         """
         Add messages and update conversation summary in memory and DB.
@@ -74,10 +72,15 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
         )
 
         try:
+            # ------------------- MODIFICATION START -------------------
+            # This logic is updated to handle the event loop conflict.
             if hasattr(self.llm, "ainvoke"):
                 new_summary = await self.llm.ainvoke(formatted_messages)
             else:
-                new_summary = self.llm.invoke(formatted_messages)
+                # Run the synchronous, blocking 'invoke' call in a separate thread
+                # to avoid blocking the main asyncio event loop.
+                new_summary = await asyncio.to_thread(self.llm.invoke, formatted_messages)
+            # -------------------- MODIFICATION END --------------------
         except Exception as e:
             print(f"Error during LLM invocation: {e}")
             new_summary_content = f"{existing_summary}\n\n{'; '.join([x.content for x in messages])}"
@@ -86,7 +89,6 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
         self.messages = [SystemMessage(content=new_summary.content)]
 
         # Persist to DB using the passed session
-        # No longer creates its own session with 'async with SessionLocal()'.
         try:
             stmt = select(Chat).where(Chat.username == self._username)
             result = await db.execute(stmt)
@@ -103,7 +105,6 @@ class ConversationSummaryMessageHistory(BaseChatMessageHistory, BaseModel):
             print(f"Error during database operation: {e}")
             import traceback
             traceback.print_exc()
-    # -------------------- MODIFICATION END --------------------
 
     def clear(self) -> None:
         self.messages = []
